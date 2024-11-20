@@ -1,0 +1,65 @@
+# Install and load required packages
+if(!require(readxl)) install.packages("readxl")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(stringr)) install.packages("stringr")
+if(!require(writexl)) install.packages("writexl")
+
+library(readxl)
+library(dplyr)
+library(stringr)
+library(writexl)
+
+# Function to standardize miRNA names
+standardize_mirna_name <- function(name) {
+  name <- tolower(name)
+  name <- str_replace(name, "-[35]p$", "")
+  name <- str_replace(name, "mir-", "mir-")
+  name <- str_trim(name)
+  return(name)
+}
+
+# Read and process monocyte data
+monocyte_data <- read_excel("Monocyte_Dataset.xlsx")
+monocyte_data$standardized_name <- sapply(monocyte_data[[1]], standardize_mirna_name)
+monocyte_data$mean_expression <- monocyte_data$Mean
+
+# Read NMV files
+nldl_counts <- read_excel("nLDL-NMV miRs_readcount.xlsx")
+oxldl_counts <- read_excel("oxLDL-NMV miRs_readcount.xlsx")
+
+# Standardize names for NMV files
+nldl_counts$standardized_name <- sapply(nldl_counts[[1]], standardize_mirna_name)
+oxldl_counts$standardized_name <- sapply(oxldl_counts[[1]], standardize_mirna_name)
+
+# Process nLDL data with expression difference calculation
+nldl_enriched <- nldl_counts %>% 
+  select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
+  mutate(source = "nLDL-NMV") %>%
+  left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
+            by = "standardized_name") %>%
+  mutate(
+    monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
+    expression_diff_percent = ((nmv_mean - monocyte_mean) / nmv_mean) * 100
+  ) %>%
+  filter(expression_diff_percent >= 50) %>%
+  arrange(desc(nmv_mean))
+
+# Process oxLDL data with expression difference calculation
+oxldl_enriched <- oxldl_counts %>%
+  select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
+  mutate(source = "oxLDL-NMV") %>%
+  left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
+            by = "standardized_name") %>%
+  mutate(
+    monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
+    expression_diff_percent = ((nmv_mean - monocyte_mean) / nmv_mean) * 100
+  ) %>%
+  filter(expression_diff_percent >= 50) %>%
+  arrange(desc(nmv_mean))
+
+# Write results to separate Excel files
+write_xlsx(nldl_enriched, "nldl_enriched_mirnas_50percent.xlsx")
+write_xlsx(oxldl_enriched, "oxldl_enriched_mirnas_50percent.xlsx")
+
+print(paste("Found", nrow(nldl_enriched), "enriched miRNAs in nLDL-NMVs (>50% difference)"))
+print(paste("Found", nrow(oxldl_enriched), "enriched miRNAs in oxLDL-NMVs (>50% difference)"))
