@@ -31,7 +31,7 @@ oxldl_counts <- read_excel("oxLDL-NMV miRs_readcount.xlsx")
 nldl_counts$standardized_name <- sapply(nldl_counts[[1]], standardize_mirna_name)
 oxldl_counts$standardized_name <- sapply(oxldl_counts[[1]], standardize_mirna_name)
 
-# Process nLDL data with expression difference calculation
+# Process nLDL data with fold change calculation
 nldl_enriched <- nldl_counts %>% 
   select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
   mutate(source = "nLDL-NMV") %>%
@@ -39,12 +39,13 @@ nldl_enriched <- nldl_counts %>%
             by = "standardized_name") %>%
   mutate(
     monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
-    expression_diff_percent = ((nmv_mean - monocyte_mean) / nmv_mean) * 100
+    monocyte_mean = ifelse(monocyte_mean == 0, 1, monocyte_mean), # Avoid division by zero
+    fold_change = nmv_mean / monocyte_mean
   ) %>%
-  filter(expression_diff_percent >= 50) %>%
+  filter(fold_change >= 2, nmv_mean >= 100) %>%
   arrange(desc(nmv_mean))
 
-# Process oxLDL data with expression difference calculation
+# Process oxLDL data with fold change calculation
 oxldl_enriched <- oxldl_counts %>%
   select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
   mutate(source = "oxLDL-NMV") %>%
@@ -52,14 +53,15 @@ oxldl_enriched <- oxldl_counts %>%
             by = "standardized_name") %>%
   mutate(
     monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
-    expression_diff_percent = ((nmv_mean - monocyte_mean) / nmv_mean) * 100
+    monocyte_mean = ifelse(monocyte_mean == 0, 1, monocyte_mean), # Avoid division by zero
+    fold_change = nmv_mean / monocyte_mean
   ) %>%
-  filter(expression_diff_percent >= 50) %>%
+  filter(fold_change >= 2, nmv_mean >= 100) %>%
   arrange(desc(nmv_mean))
 
 # Write results to separate Excel files
-write_xlsx(nldl_enriched, "nldl_enriched_mirnas_50percent.xlsx")
-write_xlsx(oxldl_enriched, "oxldl_enriched_mirnas_50percent.xlsx")
+write_xlsx(nldl_enriched, "nldl_enriched_mirnas_fold_change.xlsx")
+write_xlsx(oxldl_enriched, "oxldl_enriched_mirnas_fold_change.xlsx")
 
-print(paste("Found", nrow(nldl_enriched), "enriched miRNAs in nLDL-NMVs (>50% difference)"))
-print(paste("Found", nrow(oxldl_enriched), "enriched miRNAs in oxLDL-NMVs (>50% difference)"))
+print(paste("Found", nrow(nldl_enriched), "filtered miRNAs in nLDL-NMVs (FC >= 2)"))
+print(paste("Found", nrow(oxldl_enriched), "filtered miRNAs in oxLDL-NMVs (FC >= 2)"))
