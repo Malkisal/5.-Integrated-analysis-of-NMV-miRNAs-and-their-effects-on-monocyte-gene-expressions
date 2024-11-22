@@ -49,7 +49,7 @@ head(data.frame(
 
 # Process nLDL data with fold change calculation
 nldl_enriched <- nldl_counts %>% 
-  select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
+  select(miRNA = 1, standardized_name, nmv_mean = 10) %>%
   mutate(source = "nLDL-NMV") %>%
   left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
             by = "standardized_name") %>%
@@ -63,7 +63,7 @@ nldl_enriched <- nldl_counts %>%
 
 # Process oxLDL data with fold change calculation
 oxldl_enriched <- oxldl_counts %>%
-  select(miRNA = 1, standardized_name, nmv_mean = 9) %>%
+  select(miRNA = 1, standardized_name, nmv_mean = 10) %>%
   mutate(source = "oxLDL-NMV") %>%
   left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
             by = "standardized_name") %>%
