@@ -1,0 +1,163 @@
+# Required packages installation
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install(c("clusterProfiler", "org.Hs.eg.db", "DOSE"))
+install.packages(c("readxl", "dplyr", "writexl", "data.table"))
+
+# Load required libraries
+library(readxl)
+library(dplyr)
+library(writexl)
+library(data.table)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(DOSE)
+
+# Process input data function
+process_input_data <- function(mirna_list, monocyte_genes, mirtarbase_data) {
+  mirnas_of_interest <- mirna_list$NMV_miRNAs
+  monocyte_gene_list <- monocyte_genes[[1]]
+  
+  monocyte_detailed_targets <- mirtarbase_data %>%
+    filter(
+      miRNA %in% mirnas_of_interest,
+      `Target Gene` %in% monocyte_gene_list
+    )
+  
+  return(monocyte_detailed_targets)
+}
+
+# Analysis function with corrected select calls
+analyze_atherosclerosis_targets <- function(monocyte_targets_df) {
+  genes <- unique(monocyte_targets_df$`Target Gene`)
+  
+  gene_ids <- bitr(genes, 
+                   fromType = "SYMBOL",
+                   toType = "ENTREZID",
+                   OrgDb = org.Hs.eg.db,
+                   drop = FALSE)
+  
+  print(paste("Successfully mapped", nrow(gene_ids), "genes"))
+  
+  kegg_enrichment <- enrichKEGG(
+    gene = gene_ids$ENTREZID,
+    organism = 'hsa',
+    pvalueCutoff = 0.05
+  )
+  
+  go_enrichment <- enrichGO(
+    gene = gene_ids$ENTREZID,
+    OrgDb = org.Hs.eg.db,
+    ont = "BP",
+    pvalueCutoff = 0.05
+  )
+  
+  athero_terms <- c(
+    "atherosclerosis", "inflammation", "lipid", 
+    "cardiovascular", "immune", "cytokine",
+    "oxidative stress", "foam cell"
+  )
+  
+  filtered_results <- list(
+    KEGG = as.data.frame(kegg_enrichment) %>%
+      filter(p.adjust < 0.05,
+             sapply(Description, function(x) 
+               any(sapply(athero_terms, function(term) 
+                 grepl(term, x, ignore.case = TRUE))))),
+    GO = as.data.frame(go_enrichment) %>%
+      filter(p.adjust < 0.05,
+             sapply(Description, function(x) 
+               any(sapply(athero_terms, function(term) 
+                 grepl(term, x, ignore.case = TRUE)))))
+  )
+  
+  significant_genes <- unique(c(
+    unlist(strsplit(filtered_results$KEGG$geneID, "/")),
+    unlist(strsplit(filtered_results$GO$geneID, "/"))
+  ))
+  
+  gene_scores <- bitr(significant_genes,
+                      fromType = "ENTREZID",
+                      toType = "SYMBOL",
+                      OrgDb = org.Hs.eg.db) %>%
+    mutate(Score = sapply(ENTREZID, function(gene) {
+      pathway_score <- sum(sapply(filtered_results, function(res) {
+        if(nrow(res) > 0) {
+          sum(sapply(1:nrow(res), function(i) {
+            if(grepl(gene, res$geneID[i])) {
+              -log10(res$p.adjust[i])
+            } else {
+              0
+            }
+          }))
+        } else {
+          0
+        }
+      }))
+      return(pathway_score)
+    })) %>%
+    arrange(desc(Score))
+  
+  key_targets <- monocyte_targets_df %>%
+    filter(`Target Gene` %in% gene_scores$SYMBOL) %>%
+    left_join(gene_scores, by = c("Target Gene" = "SYMBOL")) %>%
+    arrange(desc(Score))
+  
+  # Save comprehensive results
+  write_xlsx(list(
+    Key_Targets = key_targets,
+    KEGG_Results = filtered_results$KEGG,
+    GO_Results = filtered_results$GO,
+    Gene_Scores = gene_scores %>% dplyr::select(SYMBOL, ENTREZID, Score)
+  ), "atherosclerosis_key_targets_complete.xlsx")
+  
+  # Save summary results
+  write_xlsx(list(
+    "miRNA_Target_Summary" = key_targets %>%
+      dplyr::select(miRNA, `Target Gene`, Score, ENTREZID) %>%
+      arrange(miRNA, desc(Score)),
+    
+    "Pathway_Summary" = bind_rows(
+      filtered_results$KEGG %>% mutate(Source = "KEGG"),
+      filtered_results$GO %>% mutate(Source = "GO")
+    ) %>% 
+      dplyr::select(Source, Description, p.adjust, Count, geneID) %>%
+      arrange(p.adjust)
+  ), "atherosclerosis_analysis_summary.xlsx")
+  
+  return(key_targets)
+}
+
+# Read and process data
+mirna_list <- read_excel("Key regulator_NMVs.xlsx")
+monocyte_genes <- read_excel("Monocyte genes.xlsx")
+mirtarbase_data <- read_excel("miRTarBase_MTI.xlsx")
+monocyte_detailed_targets <- process_input_data(mirna_list, monocyte_genes, mirtarbase_data)
+
+# Run analysis
+results <- analyze_atherosclerosis_targets(monocyte_detailed_targets)
+
+# Save final results with complete target list per miRNA
+write_xlsx(list(
+  "miRNA_Target_Interactions" = results %>%
+    dplyr::select(miRNA, `Target Gene`, Score, ENTREZID, `Support Type`, `References (PMID)`) %>%
+    arrange(desc(Score)),
+  
+  "miRNA_Summary" = results %>%
+    group_by(miRNA) %>%
+    summarize(
+      Number_of_Targets = n_distinct(`Target Gene`),
+      Average_Score = mean(Score),
+      All_Targets = paste(sort(unique(`Target Gene`)), collapse = ", ")
+    ) %>%
+    arrange(desc(Number_of_Targets)),
+  
+  "Top_Scored_Targets" = results %>%
+    dplyr::select(`Target Gene`, miRNA, Score) %>%
+    distinct() %>%
+    arrange(desc(Score)) %>%
+    head(50)
+), "Final_miRNA_Atherosclerosis_Targets.xlsx")
+
+cat("\nAnalysis complete. Results have been saved with complete target lists per miRNA.\n")
