@@ -1,105 +1,99 @@
-# Install and load required packages
-if(!require(readxl)) install.packages("readxl")
-if(!require(dplyr)) install.packages("dplyr")
-if(!require(stringr)) install.packages("stringr")
-if(!require(writexl)) install.packages("writexl")
-
+# Load required libraries
 library(readxl)
 library(dplyr)
 library(stringr)
-library(writexl)
 
-# Improved function to standardize miRNA names - only removing 3p/5p
-standardize_mirna_name <- function(name) {
-  name <- tolower(name)
-  # Remove only -3p or -5p suffix
-  name <- str_replace(name, "-[35]p$", "")
-  # Standardize mir/miR
-  name <- str_replace(name, "mir-", "mir-")
-  name <- str_trim(name)
+# Enhanced function to standardize miRNA names
+standardize_mirna_name <- function(name, type) {
+  if (is.na(name)) return(NA)
+  
+  # Keep the full name structure but standardize the parts we want to match
+  # 1. Convert miR to mir
+  name <- str_replace(name, "miR", "mir")
+  
+  # 2. Extract the core number and any letters directly after it
+  base_number <- str_extract(name, "\\d+[a-z]?")
+  
+  # 3. Get the prefix (everything before the number)
+  prefix <- str_extract(name, ".*?(?=\\d+[a-z]?)")
+  
+  # 4. Combine prefix and base number
+  if (!is.na(base_number) && !is.na(prefix)) {
+    return(paste0(prefix, base_number))
+  }
+  
   return(name)
 }
 
-# Read and process monocyte data
-monocyte_data <- read_excel("Monocyte_Dataset.xlsx")
-monocyte_data$standardized_name <- sapply(monocyte_data[[1]], standardize_mirna_name)
-monocyte_data$mean_expression <- monocyte_data$Mean
+# Read the Excel files
+monocytes_df <- read_excel("Monocytes_miRs.xlsx")
+nldl_df <- read_excel("nLDL-NMV_miRs.xlsx")
+oxldl_df <- read_excel("oxLDL-NMV_miRs.xlsx")
 
-# Read NMV files
-nldl_counts <- read_excel("nLDL-NMV miRs_readcount.xlsx")
-oxldl_counts <- read_excel("oxLDL-NMV miRs_readcount.xlsx")
+# Create standardized name columns
+monocytes_df$std_name <- sapply(monocytes_df[[1]], standardize_mirna_name, type="monocyte")
+nldl_df$std_name <- sapply(nldl_df[[1]], standardize_mirna_name, type="nldl_oxldl")
+oxldl_df$std_name <- sapply(oxldl_df[[1]], standardize_mirna_name, type="nldl_oxldl")
 
-# Standardize names for NMV files
-nldl_counts$standardized_name <- sapply(nldl_counts[[1]], standardize_mirna_name)
-oxldl_counts$standardized_name <- sapply(oxldl_counts[[1]], standardize_mirna_name)
+# For monocytes, group by standardized name and take the maximum expression
+monocytes_grouped <- monocytes_df %>%
+  group_by(std_name) %>%
+  summarise(
+    Monocyte_Expression = max(Mean),
+    Original_Monocyte_miRNAs = paste(!!sym(names(.)[1]), collapse = "; ")
+  )
 
-# Print sample of standardized names for verification
-print("Sample of standardized names:")
-print("Original vs Standardized names in monocyte data:")
-head(data.frame(
-  Original = monocyte_data[[1]],
-  Standardized = monocyte_data$standardized_name
-))
-
-print("Original vs Standardized names in nLDL data:")
-head(data.frame(
-  Original = nldl_counts[[1]],
-  Standardized = nldl_counts$standardized_name
-))
-
-# Process nLDL data with fold change calculation
-nldl_enriched <- nldl_counts %>% 
-  select(miRNA = 1, standardized_name, nmv_mean = 10) %>%
-  mutate(source = "nLDL-NMV") %>%
-  left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
-            by = "standardized_name") %>%
+# Filter nLDL-NMV miRNAs with fold change criteria
+nldl_filtered <- nldl_df %>%
+  filter(Mean >= 100) %>%  # Changed to Expression ≥ 100 in NMVs
+  left_join(monocytes_grouped, by = "std_name") %>%
   mutate(
-    monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
-    monocyte_mean = ifelse(monocyte_mean == 0, 1, monocyte_mean), # Avoid division by zero
-    fold_change = nmv_mean / monocyte_mean
+    Monocyte_Expression = ifelse(is.na(Monocyte_Expression), 0, Monocyte_Expression),
+    Fold_Change = Mean / (Monocyte_Expression + 0.001)  # Adding small value to avoid division by zero
   ) %>%
-  filter(fold_change >= 2, nmv_mean >= 1000) %>%
-  arrange(desc(nmv_mean))
+  filter(Fold_Change >= 2) %>%  # At least 2-fold higher in NMVs
+  transmute(
+    Standardized_miRNA = std_name,
+    Original_NMV_miRNA = .[[1]],
+    Original_Monocyte_miRNAs = Original_Monocyte_miRNAs,
+    nLDL_NMV_Expression = Mean,
+    Monocyte_Expression = Monocyte_Expression,
+    Fold_Change = Fold_Change
+  ) %>%
+  arrange(desc(Fold_Change))  # Sort by fold change
 
-# Process oxLDL data with fold change calculation
-oxldl_enriched <- oxldl_counts %>%
-  select(miRNA = 1, standardized_name, nmv_mean = 10) %>%
-  mutate(source = "oxLDL-NMV") %>%
-  left_join(select(monocyte_data, standardized_name, monocyte_mean = mean_expression), 
-            by = "standardized_name") %>%
+# Filter oxLDL-NMV miRNAs with fold change criteria
+oxldl_filtered <- oxldl_df %>%
+  filter(Mean >= 100) %>%  # Changed to Expression ≥ 100 in NMVs
+  left_join(monocytes_grouped, by = "std_name") %>%
   mutate(
-    monocyte_mean = ifelse(is.na(monocyte_mean), 0, monocyte_mean),
-    monocyte_mean = ifelse(monocyte_mean == 0, 1, monocyte_mean), # Avoid division by zero
-    fold_change = nmv_mean / monocyte_mean
+    Monocyte_Expression = ifelse(is.na(Monocyte_Expression), 0, Monocyte_Expression),
+    Fold_Change = Mean / (Monocyte_Expression + 0.001)  # Adding small value to avoid division by zero
   ) %>%
-  filter(fold_change >= 2, nmv_mean >= 1000) %>%
-  arrange(desc(nmv_mean))
-
-# Create more detailed output
-nldl_enriched_detailed <- nldl_enriched %>%
-  mutate(
-    original_nmv_name = miRNA,
-    original_monocyte_name = monocyte_data$GeneName[match(standardized_name, monocyte_data$standardized_name)],
-    standardized_name = standardized_name,
-    nldl_mean = nmv_mean,
-    fold_change = round(fold_change, 2)
+  filter(Fold_Change >= 2) %>%  # At least 2-fold higher in NMVs
+  transmute(
+    Standardized_miRNA = std_name,
+    Original_NMV_miRNA = .[[1]],
+    Original_Monocyte_miRNAs = Original_Monocyte_miRNAs,
+    oxLDL_NMV_Expression = Mean,
+    Monocyte_Expression = Monocyte_Expression,
+    Fold_Change = Fold_Change
   ) %>%
-  select(original_nmv_name, original_monocyte_name, standardized_name, nldl_mean, monocyte_mean, fold_change)
+  arrange(desc(Fold_Change))  # Sort by fold change
 
-oxldl_enriched_detailed <- oxldl_enriched %>%
-  mutate(
-    original_nmv_name = miRNA,
-    original_monocyte_name = monocyte_data$GeneName[match(standardized_name, monocyte_data$standardized_name)],
-    standardized_name = standardized_name,
-    oxldl_mean = nmv_mean,
-    fold_change = round(fold_change, 2)
-  ) %>%
-  select(original_nmv_name, original_monocyte_name, standardized_name, oxldl_mean, monocyte_mean, fold_change)
+# Write results to Excel files
+library(writexl)
+write_xlsx(nldl_filtered, "nLDL_NMV_filtered_miRNAs_fold.xlsx")
+write_xlsx(oxldl_filtered, "oxLDL_NMV_filtered_miRNAs_fold.xlsx")
 
-# Write results to separate Excel files
-write_xlsx(nldl_enriched_detailed, "nldl_enriched_mirnas_fold_change.xlsx")
-write_xlsx(oxldl_enriched_detailed, "oxldl_enriched_mirnas_fold_change.xlsx")
+# Print summary
+cat("Number of filtered miRNAs in nLDL-NMV:", nrow(nldl_filtered), "\n")
+cat("Number of filtered miRNAs in oxLDL-NMV:", nrow(oxldl_filtered), "\n")
 
-print(paste("Found", nrow(nldl_enriched), "filtered miRNAs in nLDL-NMVs (FC >= 2)"))
-print(paste("Found", nrow(oxldl_enriched), "filtered miRNAs in oxLDL-NMVs (FC >= 2)"))
+# Print first few rows of each filtered dataset
+cat("\nFirst few rows of nLDL filtered data (highest fold change):\n")
+print(head(nldl_filtered))
+
+cat("\nFirst few rows of oxLDL filtered data (highest fold change):\n")
+print(head(oxldl_filtered))
 
